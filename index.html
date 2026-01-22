@@ -419,7 +419,7 @@
       padding: 16px;
       margin-bottom: 16px;
     }
-    .chart-title { font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; }
+    .chart-title { font-size: 10px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 12px; white-space: nowrap; overflow: visible; }
     .chart-bars { display: flex; align-items: flex-end; justify-content: space-between; height: 80px; gap: 4px; }
     .chart-bar-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; }
     .chart-bar { width: 100%; background: var(--surface); border-radius: 4px; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; }
@@ -635,7 +635,10 @@
         <div id="barcodeResult" class="hidden mt-16"></div>
       </div>
       
-      <div class="section-title mt-16">Today's Log</div>
+      <div style="display:flex;justify-content:space-between;align-items:center" class="mt-16">
+        <div class="section-title" style="margin-bottom:0">Today's Log</div>
+        <button class="btn btn-sm btn-secondary" id="foodHistoryLink" style="height:28px;padding:0 12px;font-size:11px">History</button>
+      </div>
       <div class="food-list" id="foodList"></div>
     </div>
   </main>
@@ -744,8 +747,11 @@
         </div>
       </div>
       
-      <div class="section-title mt-16">Today's Exercise</div>
-      <div class="stats-row">
+      <div style="display:flex;justify-content:space-between;align-items:center" class="mt-16">
+        <div class="section-title" style="margin-bottom:0">Today's Exercise</div>
+        <button class="btn btn-sm btn-secondary" id="exHistoryLink" style="height:28px;padding:0 12px;font-size:11px">History</button>
+      </div>
+      <div class="stats-row" style="margin-top:12px">
         <div class="stat-box">
           <div class="stat-box-value burn" id="todayBurnTotal">0</div>
           <div class="stat-box-label">Cal Burned</div>
@@ -887,7 +893,7 @@
       </div>
       
       <div style="text-align:center;margin-top:32px;color:var(--text-tertiary);font-size:11px">
-        Cal v3.6 (custom workout logging)
+        Cal v3.7 (UI polish + journal)
       </div>
     </div>
   </main>
@@ -952,6 +958,26 @@
         <input type="number" class="modal-input" id="manualF" placeholder="Fat (g)">
         <button class="btn btn-full" onclick="addManual()">Add</button>
       </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="detailModal">
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title" id="detailModalTitle">Entry Details</div>
+        <button class="modal-close" onclick="closeModal('detailModal')">&times;</button>
+      </div>
+      <div class="modal-content" id="detailModalContent"></div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="journalModal">
+    <div class="modal" style="max-width:400px;max-height:85vh">
+      <div class="modal-header">
+        <div class="modal-title">Journal History</div>
+        <button class="modal-close" onclick="closeModal('journalModal')">&times;</button>
+      </div>
+      <div class="modal-content" id="journalContent" style="max-height:70vh;overflow-y:auto"></div>
     </div>
   </div>
 
@@ -1115,12 +1141,14 @@ function decrementSet(i){setSetsCompleted(i,Math.max(0,getSetsCompleted(i)-1));}
 function calculateWorkoutBurn(w,pct=100){return Math.round(w.time*(w.calPerMin||5)*(pct/100));}
 function getTotalBurn(d){const day=getDay(d);return(day.burnCal||0)+(day.activeCal||0);}
 
-function addFood(name,cal,p,c,f){
+function addFood(name,cal,p,c,f,details=null){
   const day=getDay(S.date);
   S.undo.push(JSON.stringify(S.data));
   if(S.undo.length>10)S.undo.shift();
   // Store in flat format (cal, p, c, f as direct properties)
-  day.meals.push({id:Date.now(),time:fmtTime(),name,cal:cal||0,p:p||0,c:c||0,f:f||0});
+  const meal={id:Date.now(),time:fmtTime(),name,cal:cal||0,p:p||0,c:c||0,f:f||0};
+  if(details)meal.details=details;
+  day.meals.push(meal);
   day.totals.cal+=(cal||0);
   day.totals.p+=(p||0);
   day.totals.c+=(c||0);
@@ -1149,16 +1177,27 @@ function undo(){if(S.undo.length===0)return;S.data=JSON.parse(S.undo.pop());save
 
 async function aiAnalyze(){
 const input=document.getElementById('aiInput').value.trim();if(!input)return;if(!S.api){openModal('apiModal');return;}
-const resultEl=document.getElementById('aiResult');resultEl.classList.remove('hidden');resultEl.innerHTML='<div style="color:var(--text-secondary)">Analyzing...</div>';
+const btn=document.querySelector('#describeTab .btn');
+const originalText=btn.textContent;
+btn.textContent='Analyzing...';btn.disabled=true;
+const resultEl=document.getElementById('aiResult');resultEl.classList.remove('hidden');resultEl.innerHTML='<div style="color:var(--text-secondary)">Analyzing your food...</div>';
 try{
 const res=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':S.api,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1024,messages:[{role:'user',content:`Analyze this food and estimate calories and macros. Return ONLY valid JSON array, no markdown:\n[{"name":"item name","cal":number,"p":protein_g,"c":carbs_g,"f":fat_g}]\n\nFood: ${input}`}]})});
 const data=await res.json();if(data.error)throw new Error(data.error.message);
 const text=data.content[0].text;const items=JSON.parse(text.replace(/```json?|```/g,'').trim());
 resultEl.innerHTML=items.map((item,i)=>`<div class="food-item" style="cursor:pointer" onclick="confirmAdd(${i})"><div class="food-info"><div class="food-name">${item.name}</div><div class="food-detail">P: ${item.p}g · C: ${item.c}g · F: ${item.f}g</div></div><div class="food-cal">${item.cal}</div></div>`).join('');
 window._aiItems=items;
+window._aiRawInput=input;
 }catch(e){resultEl.innerHTML=`<div style="color:var(--fat)">Error: ${e.message}</div>`;}
+finally{btn.textContent=originalText;btn.disabled=false;}
 }
-function confirmAdd(i){const item=window._aiItems[i];if(!item)return;addFood(item.name,item.cal,item.p,item.c,item.f);document.getElementById('aiInput').value='';document.getElementById('aiResult').classList.add('hidden');}
+function confirmAdd(i){
+const item=window._aiItems[i];if(!item)return;
+const details={rawInput:window._aiRawInput,items:window._aiItems};
+addFood(item.name,item.cal,item.p,item.c,item.f,details);
+document.getElementById('aiInput').value='';
+document.getElementById('aiResult').classList.add('hidden');
+}
 
 async function lookupBarcode(){
 const code=document.getElementById('barcodeInput').value.trim();if(!code)return;
@@ -1183,7 +1222,17 @@ function surpriseMe(){const cats=WORKOUT_CATS.filter(c=>c!=='apartment');selectC
 function apartmentSurprise(){selectCategory('apartment');}
 function cancelWorkout(){S.selectedWorkout=null;renderWorkout();}
 
-function logEx(name,mins,setsInfo,burnCal){const day=getDay(S.date);day.ex=day.ex||[];day.ex.push({id:Date.now(),time:fmtTime(),name,mins,setsInfo,burnCal});day.burnCal=(day.burnCal||0)+burnCal;S.data[S.date]=day;save();render();}
+function logEx(name,mins,setsInfo,burnCal,details=null){
+const day=getDay(S.date);
+day.ex=day.ex||[];
+const entry={id:Date.now(),time:fmtTime(),name,mins,setsInfo,burnCal};
+if(details)entry.details=details;
+day.ex.push(entry);
+day.burnCal=(day.burnCal||0)+burnCal;
+S.data[S.date]=day;
+save();
+render();
+}
 function deleteEx(id){const day=getDay(S.date);const ex=day.ex.find(e=>e.id===id);if(!ex)return;day.ex=day.ex.filter(e=>e.id!==id);day.burnCal=Math.max(0,(day.burnCal||0)-(ex.burnCal||0));S.data[S.date]=day;save();render();}
 
 function completeWorkout(){
@@ -1211,24 +1260,32 @@ if(tab==='manualex')updateIntensityUI();
 
 async function aiAnalyzeWorkout(){
 const input=document.getElementById('exAiInput').value.trim();if(!input)return;if(!S.api){openModal('apiModal');return;}
-const resultEl=document.getElementById('exAiResult');resultEl.classList.remove('hidden');resultEl.innerHTML='<div style="color:var(--text-secondary)">Analyzing...</div>';
+const btn=document.querySelector('#describeExTab .btn');
+const originalText=btn.textContent;
+btn.textContent='Analyzing...';btn.disabled=true;
+const resultEl=document.getElementById('exAiResult');resultEl.classList.remove('hidden');resultEl.innerHTML='<div style="color:var(--text-secondary)">Analyzing your workout...</div>';
 try{
 const res=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':S.api,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1024,messages:[{role:'user',content:`Analyze this workout description and estimate calories burned. Consider: walking ~3cal/min, strength training ~5cal/min, running ~10cal/min, HIIT ~8cal/min.
 
 Return ONLY valid JSON, no markdown:
-{"name":"short workout name","mins":duration_minutes,"burnCal":estimated_calories}
+{"name":"short workout name","mins":duration_minutes,"burnCal":estimated_calories,"exercises":["exercise 1","exercise 2"]}
+
+Include an "exercises" array listing each distinct exercise or activity mentioned. If only one activity, still include it in the array.
 
 Workout: ${input}`}]})});
 const data=await res.json();if(data.error)throw new Error(data.error.message);
 const text=data.content[0].text;const item=JSON.parse(text.replace(/```json?|```/g,'').trim());
-resultEl.innerHTML=`<div class="food-item" style="cursor:pointer" onclick="confirmAddEx()"><div class="food-info"><div class="food-name">${item.name}</div><div class="food-detail">${item.mins} min · Tap to log</div></div><div class="food-cal burn">${item.burnCal}</div></div>`;
+item.rawInput=input;
+resultEl.innerHTML=`<div class="food-item" style="cursor:pointer" onclick="confirmAddEx()"><div class="food-info"><div class="food-name">${item.name}</div><div class="food-detail">${item.mins} min · ${item.exercises?.length||1} exercise${(item.exercises?.length||1)>1?'s':''} · Tap to log</div></div><div class="food-cal burn">${item.burnCal}</div></div>`;
 window._aiEx=item;
 }catch(e){resultEl.innerHTML=`<div style="color:var(--fat)">Error: ${e.message}</div>`;}
+finally{btn.textContent=originalText;btn.disabled=false;}
 }
 
 function confirmAddEx(){
 const item=window._aiEx;if(!item)return;
-logEx(item.name,item.mins,'AI estimated',item.burnCal);
+const details={rawInput:item.rawInput,exercises:item.exercises||[]};
+logEx(item.name,item.mins,'AI estimated',item.burnCal,details);
 document.getElementById('exAiInput').value='';
 document.getElementById('exAiResult').classList.add('hidden');
 }
@@ -1304,7 +1361,16 @@ document.getElementById('carbsValue').textContent=t.c+'g';
 document.getElementById('fatValue').textContent=t.f+'g';
 
 const foodList=document.getElementById('foodList');
-foodList.innerHTML=day.meals.length===0?'<div class="empty-state">No food logged yet</div>':day.meals.map(m=>`<div class="food-item"><div class="food-info"><div class="food-name">${m.name}</div><div class="food-detail">${m.time} · P${m.p||0} C${m.c||0} F${m.f||0}</div></div><div class="food-cal">${m.cal||0}</div><button class="food-delete" onclick="deleteFood(${m.id})">×</button></div>`).join('');
+if(day.meals.length===0){
+foodList.innerHTML='<div class="empty-state">No food logged yet</div>';
+}else{
+foodList.innerHTML=day.meals.map(m=>{
+const hasDetails=m.details?'cursor:pointer':'';
+const onClick=m.details?`onclick="showFoodDetail(${m.id})"`:'';
+return `<div class="food-item" style="${hasDetails}" ${onClick}><div class="food-info"><div class="food-name">${m.name}${m.details?' ▸':''}</div><div class="food-detail">${m.time} · P${m.p||0} C${m.c||0} F${m.f||0}</div></div><div class="food-cal">${m.cal||0}</div><button class="food-delete" onclick="event.stopPropagation();deleteFood(${m.id})">×</button></div>`;
+}).join('');
+}
+document.getElementById('foodHistoryLink').onclick=()=>showJournal('food');
 
 renderQuickAdd();renderWorkout();renderTrends();renderMore();
 }
@@ -1360,7 +1426,16 @@ const weekWorkouts=Object.keys(S.data).filter(d=>{const date=new Date(d+'T12:00:
 document.getElementById('weekWorkouts').textContent=weekWorkouts;
 
 const exLog=document.getElementById('exLog');
-exLog.innerHTML=(!day.ex||day.ex.length===0)?'<div class="empty-state">No workout logged today</div>':day.ex.map(e=>`<div class="food-item"><div class="food-info"><div class="food-name">${e.name}</div><div class="food-detail">${e.time} · ${e.mins} min${e.setsInfo?' · '+e.setsInfo:''}</div></div><div class="food-cal burn">${e.burnCal||0}</div><button class="food-delete" onclick="deleteEx(${e.id})">×</button></div>`).join('');
+if(!day.ex||day.ex.length===0){
+exLog.innerHTML='<div class="empty-state">No workout logged today</div>';
+}else{
+exLog.innerHTML=day.ex.map(e=>{
+const hasDetails=e.details?'cursor:pointer':'';
+const onClick=e.details?`onclick="showExDetail(${e.id})"`:'';
+return `<div class="food-item" style="${hasDetails}" ${onClick}><div class="food-info"><div class="food-name">${e.name}${e.details?' ▸':''}</div><div class="food-detail">${e.time} · ${e.mins} min${e.setsInfo?' · '+e.setsInfo:''}</div></div><div class="food-cal burn">${e.burnCal||0}</div><button class="food-delete" onclick="event.stopPropagation();deleteEx(${e.id})">×</button></div>`;
+}).join('');
+}
+document.getElementById('exHistoryLink').onclick=()=>showJournal('exercise');
 }
 
 function renderTrends(){
@@ -1415,6 +1490,91 @@ document.getElementById('toLose').textContent=latest?Math.max(0,latest-C.goalWt)
 
 function openModal(id){document.getElementById(id).classList.add('active');}
 function closeModal(id){document.getElementById(id).classList.remove('active');}
+
+function showFoodDetail(id){
+const day=getDay(S.date);
+const meal=day.meals.find(m=>m.id===id);
+if(!meal)return;
+document.getElementById('detailModalTitle').textContent=meal.name;
+let html=`<div style="margin-bottom:16px">
+<div style="font-size:13px;color:var(--text-secondary)">${meal.time}</div>
+<div style="font-size:24px;font-weight:600;color:var(--accent);margin:8px 0">${meal.cal} cal</div>
+<div style="font-size:13px;color:var(--text-secondary)">P: ${meal.p}g · C: ${meal.c}g · F: ${meal.f}g</div>
+</div>`;
+if(meal.details){
+html+=`<div class="section-title">Original Input</div>
+<div style="background:var(--surface);border-radius:8px;padding:12px;font-size:13px;color:var(--text-secondary);margin-bottom:16px;white-space:pre-wrap">${meal.details.rawInput||'N/A'}</div>`;
+if(meal.details.items&&meal.details.items.length>1){
+html+=`<div class="section-title">All Items Analyzed</div>`;
+meal.details.items.forEach(item=>{
+html+=`<div style="background:var(--surface);border-radius:8px;padding:12px;margin-bottom:8px">
+<div style="font-size:13px;font-weight:500">${item.name}</div>
+<div style="font-size:12px;color:var(--text-secondary)">P: ${item.p}g · C: ${item.c}g · F: ${item.f}g · <span style="color:var(--accent)">${item.cal} cal</span></div>
+</div>`;
+});
+}
+}
+document.getElementById('detailModalContent').innerHTML=html;
+openModal('detailModal');
+}
+
+function showExDetail(id){
+const day=getDay(S.date);
+const ex=day.ex.find(e=>e.id===id);
+if(!ex)return;
+document.getElementById('detailModalTitle').textContent=ex.name;
+let html=`<div style="margin-bottom:16px">
+<div style="font-size:13px;color:var(--text-secondary)">${ex.time} · ${ex.mins} min</div>
+<div style="font-size:24px;font-weight:600;color:var(--orange);margin:8px 0">${ex.burnCal} cal burned</div>
+${ex.setsInfo?`<div style="font-size:13px;color:var(--text-secondary)">${ex.setsInfo}</div>`:''}
+</div>`;
+if(ex.details){
+if(ex.details.rawInput){
+html+=`<div class="section-title">Original Input</div>
+<div style="background:var(--surface);border-radius:8px;padding:12px;font-size:13px;color:var(--text-secondary);margin-bottom:16px;white-space:pre-wrap">${ex.details.rawInput}</div>`;
+}
+if(ex.details.exercises&&ex.details.exercises.length>0){
+html+=`<div class="section-title">Exercises Performed</div>`;
+ex.details.exercises.forEach((exercise,i)=>{
+html+=`<div style="background:var(--surface);border-radius:8px;padding:12px;margin-bottom:8px;font-size:13px">
+<span style="color:var(--accent);margin-right:8px">${i+1}.</span>${exercise}
+</div>`;
+});
+}
+}
+document.getElementById('detailModalContent').innerHTML=html;
+openModal('detailModal');
+}
+
+function showJournal(type){
+const dates=Object.keys(S.data).sort().reverse();
+let html='';
+if(dates.length===0){
+html='<div class="empty-state">No entries yet</div>';
+}else{
+dates.forEach(date=>{
+const day=S.data[date];
+const entries=type==='food'?day.meals:(day.ex||[]);
+if(!entries||entries.length===0)return;
+html+=`<div style="margin-bottom:16px">
+<div style="font-size:12px;font-weight:600;color:var(--accent);margin-bottom:8px">${date===today()?'Today':fmtDate(date)}</div>`;
+entries.forEach(e=>{
+if(type==='food'){
+html+=`<div class="food-item" style="margin-bottom:6px">
+<div class="food-info"><div class="food-name">${e.name}</div><div class="food-detail">${e.time} · P${e.p||0} C${e.c||0} F${e.f||0}</div></div>
+<div class="food-cal">${e.cal||0}</div></div>`;
+}else{
+html+=`<div class="food-item" style="margin-bottom:6px">
+<div class="food-info"><div class="food-name">${e.name}</div><div class="food-detail">${e.time} · ${e.mins} min</div></div>
+<div class="food-cal burn">${e.burnCal||0}</div></div>`;
+}
+});
+html+=`</div>`;
+});
+}
+document.getElementById('journalContent').innerHTML=html;
+openModal('journalModal');
+}
 
 function switchTab(tab){
 document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
