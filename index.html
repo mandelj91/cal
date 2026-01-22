@@ -676,6 +676,49 @@
         </div>
       </div>
       
+      <div id="customLogSection">
+        <div class="section-title mt-16">Log Custom Workout</div>
+        <div class="tabs mb-16">
+          <button class="tab active" data-extab="describe">Describe</button>
+          <button class="tab" data-extab="quicklog">Quick Log</button>
+          <button class="tab" data-extab="manualex">Manual</button>
+        </div>
+        
+        <div id="describeExTab">
+          <textarea class="textarea" id="exAiInput" placeholder="Describe your workout...&#10;&#10;Example: 30 minute full body workout with push-ups, squats, and planks&#10;Example: walked 2 miles at a brisk pace&#10;Example: 45 min gym session, chest and triceps"></textarea>
+          <button class="btn btn-full mt-16" onclick="aiAnalyzeWorkout()">Analyze</button>
+          <div id="exAiResult" class="hidden mt-16"></div>
+        </div>
+        
+        <div id="quicklogTab" class="hidden">
+          <div class="quick-grid" id="quickExGrid"></div>
+        </div>
+        
+        <div id="manualexTab" class="hidden">
+          <input type="text" class="input mb-12" id="manualExName" placeholder="Workout name (e.g., Morning run)">
+          <input type="number" class="input mb-12" id="manualExMins" placeholder="Duration (minutes)">
+          <div class="quick-grid mb-12">
+            <button class="quick-item" id="intLow" onclick="setIntensity('low')">
+              <div class="quick-name">Low</div>
+              <div class="quick-meta">3 cal/min · Walk, yoga</div>
+            </button>
+            <button class="quick-item" id="intMed" onclick="setIntensity('med')">
+              <div class="quick-name">Medium</div>
+              <div class="quick-meta">5 cal/min · Strength</div>
+            </button>
+            <button class="quick-item" id="intHigh" onclick="setIntensity('high')">
+              <div class="quick-name">High</div>
+              <div class="quick-meta">7 cal/min · HIIT, run</div>
+            </button>
+            <button class="quick-item" id="intVHigh" onclick="setIntensity('vhigh')">
+              <div class="quick-name">Very High</div>
+              <div class="quick-meta">9 cal/min · Sprint</div>
+            </button>
+          </div>
+          <button class="btn btn-full" onclick="addManualEx()">Log Workout</button>
+        </div>
+      </div>
+      
       <div id="activeWorkout" class="hidden">
         <div class="workout-card">
           <div class="workout-header">
@@ -844,7 +887,7 @@
       </div>
       
       <div style="text-align:center;margin-top:32px;color:var(--text-tertiary);font-size:11px">
-        Cal v3.5 (data migration fix)
+        Cal v3.6 (custom workout logging)
       </div>
     </div>
   </main>
@@ -965,7 +1008,16 @@ apartment:[
 
 const WORKOUT_CATS=['push','pull','legs','full','quick','apartment'];
 
-let S={data:{},weights:[],exDone:{},workoutHistory:[],selectedWorkout:null,undo:[],date:null,api:null};
+const QUICK_EX=[
+{n:'30 min Walk',mins:30,calPerMin:3},{n:'45 min Walk',mins:45,calPerMin:3},
+{n:'20 min Run',mins:20,calPerMin:10},{n:'30 min Run',mins:30,calPerMin:10},
+{n:'30 min Gym',mins:30,calPerMin:5},{n:'45 min Gym',mins:45,calPerMin:5},
+{n:'60 min Gym',mins:60,calPerMin:5},{n:'20 min Yoga',mins:20,calPerMin:3},
+{n:'30 min Bike',mins:30,calPerMin:7},{n:'20 min HIIT',mins:20,calPerMin:8},
+{n:'30 min Swim',mins:30,calPerMin:8},{n:'60 min Hike',mins:60,calPerMin:5},
+];
+
+let S={data:{},weights:[],exDone:{},workoutHistory:[],selectedWorkout:null,undo:[],date:null,api:null,exIntensity:'med'};
 
 function localDateStr(d){return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
 const today=()=>localDateStr(new Date());
@@ -1146,6 +1198,79 @@ logEx(w.name+' ('+w.tag+')',w.time,setsInfo,burnCal);
 S.selectedWorkout=null;save();renderWorkout();
 }
 
+// Custom workout logging functions
+function switchExTab(tab){
+document.querySelectorAll('[data-extab]').forEach(t=>t.classList.remove('active'));
+document.querySelector(`[data-extab="${tab}"]`).classList.add('active');
+document.getElementById('describeExTab').classList.toggle('hidden',tab!=='describe');
+document.getElementById('quicklogTab').classList.toggle('hidden',tab!=='quicklog');
+document.getElementById('manualexTab').classList.toggle('hidden',tab!=='manualex');
+if(tab==='quicklog')renderQuickEx();
+if(tab==='manualex')updateIntensityUI();
+}
+
+async function aiAnalyzeWorkout(){
+const input=document.getElementById('exAiInput').value.trim();if(!input)return;if(!S.api){openModal('apiModal');return;}
+const resultEl=document.getElementById('exAiResult');resultEl.classList.remove('hidden');resultEl.innerHTML='<div style="color:var(--text-secondary)">Analyzing...</div>';
+try{
+const res=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':S.api,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1024,messages:[{role:'user',content:`Analyze this workout description and estimate calories burned. Consider: walking ~3cal/min, strength training ~5cal/min, running ~10cal/min, HIIT ~8cal/min.
+
+Return ONLY valid JSON, no markdown:
+{"name":"short workout name","mins":duration_minutes,"burnCal":estimated_calories}
+
+Workout: ${input}`}]})});
+const data=await res.json();if(data.error)throw new Error(data.error.message);
+const text=data.content[0].text;const item=JSON.parse(text.replace(/```json?|```/g,'').trim());
+resultEl.innerHTML=`<div class="food-item" style="cursor:pointer" onclick="confirmAddEx()"><div class="food-info"><div class="food-name">${item.name}</div><div class="food-detail">${item.mins} min · Tap to log</div></div><div class="food-cal burn">${item.burnCal}</div></div>`;
+window._aiEx=item;
+}catch(e){resultEl.innerHTML=`<div style="color:var(--fat)">Error: ${e.message}</div>`;}
+}
+
+function confirmAddEx(){
+const item=window._aiEx;if(!item)return;
+logEx(item.name,item.mins,'AI estimated',item.burnCal);
+document.getElementById('exAiInput').value='';
+document.getElementById('exAiResult').classList.add('hidden');
+}
+
+function renderQuickEx(){
+const grid=document.getElementById('quickExGrid');
+grid.innerHTML=QUICK_EX.map(ex=>{
+const burn=ex.mins*ex.calPerMin;
+return `<div class="quick-item" onclick="addQuickEx('${ex.n}',${ex.mins},${burn})"><div class="quick-name">${ex.n}</div><div class="quick-meta"><span class="quick-cal" style="color:var(--orange)">${burn} cal</span></div></div>`;
+}).join('');
+}
+
+function addQuickEx(name,mins,burn){logEx(name,mins,'',burn);}
+
+const INTENSITY_RATES={low:3,med:5,high:7,vhigh:9};
+
+function setIntensity(level){
+S.exIntensity=level;
+updateIntensityUI();
+}
+
+function updateIntensityUI(){
+['Low','Med','High','VHigh'].forEach(l=>{
+const el=document.getElementById('int'+l.charAt(0).toUpperCase()+l.slice(1).toLowerCase());
+if(el)el.classList.toggle('active',S.exIntensity===l.toLowerCase());
+});
+document.getElementById('intLow').classList.toggle('active',S.exIntensity==='low');
+document.getElementById('intMed').classList.toggle('active',S.exIntensity==='med');
+document.getElementById('intHigh').classList.toggle('active',S.exIntensity==='high');
+document.getElementById('intVHigh').classList.toggle('active',S.exIntensity==='vhigh');
+}
+
+function addManualEx(){
+const name=document.getElementById('manualExName').value.trim();
+const mins=parseInt(document.getElementById('manualExMins').value);
+if(!name||!mins||mins<1)return;
+const burn=mins*INTENSITY_RATES[S.exIntensity];
+logEx(name,mins,S.exIntensity+' intensity',burn);
+document.getElementById('manualExName').value='';
+document.getElementById('manualExMins').value='';
+}
+
 function logSteps(){const val=parseInt(document.getElementById('stepsInput').value);if(!val||val<0)return;const day=getDay(S.date);day.steps=(day.steps||0)+val;S.data[S.date]=day;save();render();document.getElementById('stepsInput').value='';}
 function logActiveCal(){const val=parseInt(document.getElementById('activeCalInput').value);if(!val||val<0)return;const day=getDay(S.date);day.activeCal=(day.activeCal||0)+val;S.data[S.date]=day;save();render();document.getElementById('activeCalInput').value='';}
 function logWeight(){const val=parseFloat(document.getElementById('weightInput').value);if(!val||val<50||val>500)return;S.weights.push({date:S.date,weight:val});S.weights=S.weights.slice(-30);save();render();document.getElementById('weightInput').value='';}
@@ -1186,9 +1311,13 @@ renderQuickAdd();renderWorkout();renderTrends();renderMore();
 
 function renderWorkout(){
 const selectionEl=document.getElementById('workoutSelection'),activeEl=document.getElementById('activeWorkout');
+const customLogEl=document.getElementById('customLogSection');
 
 if(S.selectedWorkout){
-selectionEl.classList.add('hidden');activeEl.classList.remove('hidden');
+selectionEl.classList.add('hidden');
+activeEl.classList.remove('hidden');
+customLogEl.classList.add('hidden');
+
 const w=S.selectedWorkout;
 document.getElementById('workoutTitle').textContent=w.name;
 document.getElementById('workoutBadge').textContent=w.tag;
@@ -1213,7 +1342,11 @@ document.getElementById('workoutEstBurn').textContent=estBurn;
 const completeBtn=document.getElementById('completeBtn');
 const actualBurn=calculateWorkoutBurn(w,pct);
 completeBtn.textContent=pct===100?`Complete (${estBurn} cal)`:pct>0?`Complete ${pct}% (${actualBurn} cal)`:'Complete Workout';
-}else{selectionEl.classList.remove('hidden');activeEl.classList.add('hidden');}
+}else{
+selectionEl.classList.remove('hidden');
+activeEl.classList.add('hidden');
+customLogEl.classList.remove('hidden');
+}
 
 const day=getDay(S.date);
 const todayBurn=day.burnCal||0;
@@ -1302,6 +1435,7 @@ function init(){
 load();S.date=today();
 document.querySelectorAll('.nav-item').forEach(btn=>{btn.onclick=()=>switchPage(btn.dataset.page);});
 document.querySelectorAll('.tab').forEach(tab=>{tab.onclick=()=>switchTab(tab.dataset.tab);});
+document.querySelectorAll('[data-extab]').forEach(tab=>{tab.onclick=()=>switchExTab(tab.dataset.extab);});
 document.getElementById('prevDay').onclick=()=>{const d=new Date(S.date+'T12:00:00');d.setDate(d.getDate()-1);S.date=localDateStr(d);render();};
 document.getElementById('nextDay').onclick=()=>{if(S.date===today())return;const d=new Date(S.date+'T12:00:00');d.setDate(d.getDate()+1);S.date=localDateStr(d);render();};
 document.getElementById('undoBtn').onclick=undo;
