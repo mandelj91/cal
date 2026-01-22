@@ -844,7 +844,7 @@
       </div>
       
       <div style="text-align:center;margin-top:32px;color:var(--text-tertiary);font-size:11px">
-        Cal v3.4 (exercise burn tracking)
+        Cal v3.5 (data migration fix)
       </div>
     </div>
   </main>
@@ -980,9 +980,74 @@ function last7(){const days=[];for(let i=6;i>=0;i--){const d=new Date();d.setDat
 function load(){
 try{
 const s=localStorage.getItem(C.key);
-if(s){const p=JSON.parse(s);S.data=p.data||{};S.weights=p.weights||[];S.exDone=p.exDone||{};S.workoutHistory=p.workoutHistory||[];
-for(const date in S.exDone){if(Array.isArray(S.exDone[date])){const oldArr=S.exDone[date];S.exDone[date]={};oldArr.forEach(idx=>{S.exDone[date][idx]=99;});}}
-for(const date in S.data){if(S.data[date].burnCal===undefined){let burnCal=0;if(S.data[date].ex){S.data[date].ex.forEach(e=>{if(e.burnCal)burnCal+=e.burnCal;});}S.data[date].burnCal=burnCal;}}}
+if(s){
+  const p=JSON.parse(s);
+  S.data=p.data||{};
+  S.weights=p.weights||[];
+  S.exDone=p.exDone||{};
+  S.workoutHistory=p.workoutHistory||[];
+  
+  // MIGRATION: exDone from array to object format
+  for(const date in S.exDone){
+    if(Array.isArray(S.exDone[date])){
+      const oldArr=S.exDone[date];
+      S.exDone[date]={};
+      oldArr.forEach(idx=>{S.exDone[date][idx]=99;});
+    }
+  }
+  
+  // MIGRATION: Fix meal data format and recalculate totals
+  for(const date in S.data){
+    const day=S.data[date];
+    
+    // Ensure arrays exist
+    if(!day.meals) day.meals=[];
+    if(!day.ex) day.ex=[];
+    if(!day.totals) day.totals={cal:0,p:0,c:0,f:0};
+    
+    // CRITICAL FIX: Migrate meals from nested totals format to flat format
+    let needsRecalc = false;
+    day.meals.forEach(meal=>{
+      // Check if meal uses old format with nested totals
+      if(meal.totals && typeof meal.totals === 'object'){
+        // Migrate from {name, totals:{cal,p,c,f}} to {name, cal, p, c, f}
+        meal.cal = meal.totals.cal || 0;
+        meal.p = meal.totals.p || 0;
+        meal.c = meal.totals.c || 0;
+        meal.f = meal.totals.f || 0;
+        delete meal.totals;
+        needsRecalc = true;
+      }
+      // Handle undefined/NaN values
+      if(meal.cal === undefined || isNaN(meal.cal)) meal.cal = 0;
+      if(meal.p === undefined || isNaN(meal.p)) meal.p = 0;
+      if(meal.c === undefined || isNaN(meal.c)) meal.c = 0;
+      if(meal.f === undefined || isNaN(meal.f)) meal.f = 0;
+    });
+    
+    // Recalculate day totals from meals (ensures consistency)
+    day.totals.cal = day.meals.reduce((sum,m)=>sum+(m.cal||0),0);
+    day.totals.p = day.meals.reduce((sum,m)=>sum+(m.p||0),0);
+    day.totals.c = day.meals.reduce((sum,m)=>sum+(m.c||0),0);
+    day.totals.f = day.meals.reduce((sum,m)=>sum+(m.f||0),0);
+    
+    // MIGRATION: Calculate burnCal from exercises if missing
+    if(day.burnCal===undefined){
+      let burnCal=0;
+      if(day.ex){
+        day.ex.forEach(e=>{if(e.burnCal)burnCal+=e.burnCal;});
+      }
+      day.burnCal=burnCal;
+    }
+    
+    // Ensure other fields exist
+    if(day.steps===undefined) day.steps=0;
+    if(day.activeCal===undefined) day.activeCal=0;
+  }
+  
+  // Save migrated data
+  save();
+}
 S.api=localStorage.getItem(C.apiKey);
 }catch(e){console.error('Load error:',e);}
 }
@@ -998,8 +1063,36 @@ function decrementSet(i){setSetsCompleted(i,Math.max(0,getSetsCompleted(i)-1));}
 function calculateWorkoutBurn(w,pct=100){return Math.round(w.time*(w.calPerMin||5)*(pct/100));}
 function getTotalBurn(d){const day=getDay(d);return(day.burnCal||0)+(day.activeCal||0);}
 
-function addFood(name,cal,p,c,f){const day=getDay(S.date);S.undo.push(JSON.stringify(S.data));if(S.undo.length>10)S.undo.shift();day.meals.push({id:Date.now(),time:fmtTime(),name,cal,p,c,f});day.totals.cal+=cal;day.totals.p+=p;day.totals.c+=c;day.totals.f+=f;S.data[S.date]=day;save();render();}
-function deleteFood(id){const day=getDay(S.date);const meal=day.meals.find(m=>m.id===id);if(!meal)return;S.undo.push(JSON.stringify(S.data));day.meals=day.meals.filter(m=>m.id!==id);day.totals.cal-=meal.cal;day.totals.p-=meal.p;day.totals.c-=meal.c;day.totals.f-=meal.f;S.data[S.date]=day;save();render();}
+function addFood(name,cal,p,c,f){
+  const day=getDay(S.date);
+  S.undo.push(JSON.stringify(S.data));
+  if(S.undo.length>10)S.undo.shift();
+  // Store in flat format (cal, p, c, f as direct properties)
+  day.meals.push({id:Date.now(),time:fmtTime(),name,cal:cal||0,p:p||0,c:c||0,f:f||0});
+  day.totals.cal+=(cal||0);
+  day.totals.p+=(p||0);
+  day.totals.c+=(c||0);
+  day.totals.f+=(f||0);
+  S.data[S.date]=day;
+  save();
+  render();
+}
+
+function deleteFood(id){
+  const day=getDay(S.date);
+  const meal=day.meals.find(m=>m.id===id);
+  if(!meal)return;
+  S.undo.push(JSON.stringify(S.data));
+  day.meals=day.meals.filter(m=>m.id!==id);
+  day.totals.cal-=(meal.cal||0);
+  day.totals.p-=(meal.p||0);
+  day.totals.c-=(meal.c||0);
+  day.totals.f-=(meal.f||0);
+  S.data[S.date]=day;
+  save();
+  render();
+}
+
 function undo(){if(S.undo.length===0)return;S.data=JSON.parse(S.undo.pop());save();render();}
 
 async function aiAnalyze(){
@@ -1058,7 +1151,7 @@ function logActiveCal(){const val=parseInt(document.getElementById('activeCalInp
 function logWeight(){const val=parseFloat(document.getElementById('weightInput').value);if(!val||val<50||val>500)return;S.weights.push({date:S.date,weight:val});S.weights=S.weights.slice(-30);save();render();document.getElementById('weightInput').value='';}
 
 function exportData(){const blob=new Blob([JSON.stringify({data:S.data,weights:S.weights,exDone:S.exDone,workoutHistory:S.workoutHistory},null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`cal-backup-${today()}.json`;a.click();}
-function importData(e){const file=e.target.files[0];if(!file)return;const reader=new FileReader();reader.onload=ev=>{try{const imp=JSON.parse(ev.target.result);if(!confirm(`Import ${Object.keys(imp.data||{}).length} days?`))return;S.data=imp.data||{};S.weights=imp.weights||[];S.exDone=imp.exDone||{};S.workoutHistory=imp.workoutHistory||[];save();render();alert('Done');}catch{alert('Invalid file');}};reader.readAsText(file);e.target.value='';}
+function importData(e){const file=e.target.files[0];if(!file)return;const reader=new FileReader();reader.onload=ev=>{try{const imp=JSON.parse(ev.target.result);if(!confirm(`Import ${Object.keys(imp.data||{}).length} days?`))return;S.data=imp.data||{};S.weights=imp.weights||[];S.exDone=imp.exDone||{};S.workoutHistory=imp.workoutHistory||[];save();load();render();alert('Done');}catch{alert('Invalid file');}};reader.readAsText(file);e.target.value='';}
 function clearData(){if(!confirm('Clear ALL data?'))return;if(!confirm('Are you sure?'))return;localStorage.removeItem(C.key);S={data:{},weights:[],exDone:{},workoutHistory:[],undo:[],date:today(),api:S.api};render();}
 
 function render(){
@@ -1086,7 +1179,7 @@ document.getElementById('carbsValue').textContent=t.c+'g';
 document.getElementById('fatValue').textContent=t.f+'g';
 
 const foodList=document.getElementById('foodList');
-foodList.innerHTML=day.meals.length===0?'<div class="empty-state">No food logged yet</div>':day.meals.map(m=>`<div class="food-item"><div class="food-info"><div class="food-name">${m.name}</div><div class="food-detail">${m.time} · P${m.p} C${m.c} F${m.f}</div></div><div class="food-cal">${m.cal}</div><button class="food-delete" onclick="deleteFood(${m.id})">×</button></div>`).join('');
+foodList.innerHTML=day.meals.length===0?'<div class="empty-state">No food logged yet</div>':day.meals.map(m=>`<div class="food-item"><div class="food-info"><div class="food-name">${m.name}</div><div class="food-detail">${m.time} · P${m.p||0} C${m.c||0} F${m.f||0}</div></div><div class="food-cal">${m.cal||0}</div><button class="food-delete" onclick="deleteFood(${m.id})">×</button></div>`).join('');
 
 renderQuickAdd();renderWorkout();renderTrends();renderMore();
 }
